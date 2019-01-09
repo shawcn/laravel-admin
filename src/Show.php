@@ -391,7 +391,7 @@ class Show implements Renderable
                 return $this->addRelation($method, $arguments[1], $arguments[0]);
             }
 
-            return $this->addField($method)->setRelation(snake_case($method));
+            return $this->addField($method, array_get($arguments, 0))->setRelation(snake_case($method));
         }
 
         if ($relation    instanceof HasMany
@@ -446,16 +446,16 @@ class Show implements Renderable
      */
     public function render()
     {
-        if (is_null($this->builder)) {
+        if (is_callable($this->builder)) {
+            call_user_func($this->builder, $this);
+        }
+
+        if ($this->fields->isEmpty()) {
             $this->all();
         }
 
         if (is_array($this->builder)) {
             $this->fields($this->builder);
-        }
-
-        if (is_callable($this->builder)) {
-            call_user_func($this->builder, $this);
         }
 
         $this->fields->each->setValue($this->model);

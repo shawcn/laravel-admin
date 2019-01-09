@@ -7,10 +7,16 @@ use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Contracts\Support\Renderable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Traits\Macroable;
 
 class Field implements Renderable
 {
+    use Macroable {
+        __call as macroCall;
+    }
+
     /**
      * @var string
      */
@@ -29,6 +35,13 @@ class Field implements Renderable
      * @var string
      */
     protected $label;
+
+    /**
+     * Escape field value or not.
+     *
+     * @var bool
+     */
+    protected $escape = true;
 
     /**
      * Field value.
@@ -55,6 +68,29 @@ class Field implements Renderable
      * @var string
      */
     protected $relation;
+
+    /**
+     * If show contents in box.
+     *
+     * @var bool
+     */
+    public $wrapped = true;
+
+    /**
+     * @var array
+     */
+    protected $fileTypes = [
+        'image'      => 'png|jpg|jpeg|tmp|gif',
+        'word'       => 'doc|docx',
+        'excel'      => 'xls|xlsx|csv',
+        'powerpoint' => 'ppt|pptx',
+        'pdf'        => 'pdf',
+        'code'       => 'php|js|java|python|ruby|go|c|cpp|sql|m|h|json|html|aspx',
+        'archive'    => 'zip|tar\.gz|rar|rpm',
+        'txt'        => 'txt|pac|log|md',
+        'audio'      => 'mp3|wav|flac|3pg|aa|aac|ape|au|m4a|mpc|ogg',
+        'video'      => 'mkv|rmvb|flv|mp4|avi|wmv|rm|asf|mpeg',
+    ];
 
     /**
      * Field constructor.
@@ -163,16 +199,80 @@ class Field implements Renderable
      */
     public function image($server = '', $width = 200, $height = 200)
     {
-        return $this->as(function ($path) use ($server, $width, $height) {
+        return $this->unescape()->as(function ($path) use ($server, $width, $height) {
+            if (empty($path)) {
+                return '';
+            }
+
             if (url()->isValidUrl($path)) {
                 $src = $path;
             } elseif ($server) {
                 $src = $server.$path;
             } else {
-                $src = Storage::disk(config('admin.upload.disk'))->url($path);
+                $disk = config('admin.upload.disk');
+
+                if (config("filesystems.disks.{$disk}")) {
+                    $src = Storage::disk($disk)->url($path);
+                } else {
+                    return '';
+                }
             }
 
             return "<img src='$src' style='max-width:{$width}px;max-height:{$height}px' class='img' />";
+        });
+    }
+
+    /**
+     * Show field as a file.
+     *
+     * @param string $server
+     * @param bool   $download
+     *
+     * @return Field
+     */
+    public function file($server = '', $download = true)
+    {
+        $field = $this;
+
+        return $this->unescape()->as(function ($path) use ($server, $download, $field) {
+            $name = basename($path);
+
+            $field->wrapped = false;
+
+            $size = $url = '';
+
+            if (url()->isValidUrl($path)) {
+                $url = $path;
+            } elseif ($server) {
+                $url = $server.$path;
+            } else {
+                $storage = Storage::disk(config('admin.upload.disk'));
+                if ($storage->exists($path)) {
+                    $url = $storage->url($path);
+                    $size = ($storage->size($path) / 1000).'KB';
+                }
+            }
+
+            if (!$url) {
+                return '';
+            }
+
+            return <<<HTML
+<ul class="mailbox-attachments clearfix">
+    <li style="margin-bottom: 0;">
+      <span class="mailbox-attachment-icon"><i class="fa {$field->getFileIcon($name)}"></i></span>
+      <div class="mailbox-attachment-info">
+        <div class="mailbox-attachment-name">
+            <i class="fa fa-paperclip"></i> {$name}
+            </div>
+            <span class="mailbox-attachment-size">
+              {$size}&nbsp;
+              <a href="{$url}" class="btn btn-default btn-xs pull-right" target="_blank"><i class="fa fa-cloud-download"></i></a>
+            </span>
+      </div>
+    </li>
+  </ul>
+HTML;
         });
     }
 
@@ -186,7 +286,7 @@ class Field implements Renderable
      */
     public function link($href = '', $target = '_blank')
     {
-        return $this->as(function ($link) use ($href, $target) {
+        return $this->unescape()->as(function ($link) use ($href, $target) {
             $href = $href ?: $link;
 
             return "<a href='$href' target='{$target}'>{$link}</a>";
@@ -202,7 +302,7 @@ class Field implements Renderable
      */
     public function label($style = 'success')
     {
-        return $this->as(function ($value) use ($style) {
+        return $this->unescape()->as(function ($value) use ($style) {
             if ($value instanceof Arrayable) {
                 $value = $value->toArray();
             }
@@ -222,7 +322,7 @@ class Field implements Renderable
      */
     public function badge($style = 'blue')
     {
-        return $this->as(function ($value) use ($style) {
+        return $this->unescape()->as(function ($value) use ($style) {
             if ($value instanceof Arrayable) {
                 $value = $value->toArray();
             }
@@ -231,6 +331,72 @@ class Field implements Renderable
                 return "<span class='badge bg-{$style}'>$name</span>";
             })->implode('&nbsp;');
         });
+    }
+
+    /**
+     * Show field as json code.
+     *
+     * @return Field
+     */
+    public function json()
+    {
+        $field = $this;
+
+        return $this->unescape()->as(function ($value) use ($field) {
+            $content = json_decode($value, true);
+
+            if (json_last_error() == 0) {
+                $field->wrapped = false;
+
+                return '<pre><code>'.json_encode($content, JSON_PRETTY_PRINT).'</code></pre>';
+            }
+
+            return $value;
+        });
+    }
+
+    /**
+     * Get file icon.
+     *
+     * @param string $file
+     *
+     * @return string
+     */
+    public function getFileIcon($file = '')
+    {
+        $extension = File::extension($file);
+
+        foreach ($this->fileTypes as $type => $regex) {
+            if (preg_match("/^($regex)$/i", $extension) !== 0) {
+                return "fa-file-{$type}-o";
+            }
+        }
+
+        return 'fa-file-o';
+    }
+
+    /**
+     * Set escape or not for this field.
+     *
+     * @param bool $escape
+     *
+     * @return $this
+     */
+    public function setEscape($escape = true)
+    {
+        $this->escape = $escape;
+
+        return $this;
+    }
+
+    /**
+     * Unescape for this field.
+     *
+     * @return Field
+     */
+    public function unescape()
+    {
+        return $this->setEscape(false);
     }
 
     /**
@@ -277,12 +443,31 @@ class Field implements Renderable
      */
     public function __call($method, $arguments = [])
     {
+        if (static::hasMacro($method)) {
+            return $this->macroCall($method, $arguments);
+        }
+
         if ($this->relation) {
             $this->name = $method;
             $this->label = $this->formatLabel(array_get($arguments, 0));
         }
 
         return $this;
+    }
+
+    /**
+     * Get all variables passed to field view.
+     *
+     * @return array
+     */
+    protected function variables()
+    {
+        return [
+            'content'   => $this->value,
+            'escape'    => $this->escape,
+            'label'     => $this->getLabel(),
+            'wrapped'   => $this->wrapped,
+        ];
     }
 
     /**
@@ -301,9 +486,6 @@ class Field implements Renderable
             });
         }
 
-        $content = $this->value;
-        $label = $this->getLabel();
-
-        return view($this->view, compact('content', 'label'));
+        return view($this->view, $this->variables());
     }
 }

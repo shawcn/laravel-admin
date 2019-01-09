@@ -10,9 +10,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Input;
 use Illuminate\Support\Facades\Request;
+use Illuminate\Support\Str;
 
 class Model
 {
@@ -22,6 +24,11 @@ class Model
      * @var EloquentModel
      */
     protected $model;
+
+    /**
+     * @var EloquentModel
+     */
+    protected $originalModel;
 
     /**
      * Array of queries of the eloquent model.
@@ -88,6 +95,11 @@ class Model
     protected $relation;
 
     /**
+     * @var array
+     */
+    protected $eagerLoads = [];
+
+    /**
      * Create a new grid model instance.
      *
      * @param EloquentModel $model
@@ -95,6 +107,8 @@ class Model
     public function __construct(EloquentModel $model)
     {
         $this->model = $model;
+
+        $this->originalModel = $model;
 
         $this->queries = collect();
 
@@ -184,6 +198,8 @@ class Model
     }
 
     /**
+     * Set parent grid instance.
+     *
      * @param Grid $grid
      *
      * @return $this
@@ -193,6 +209,16 @@ class Model
         $this->grid = $grid;
 
         return $this;
+    }
+
+    /**
+     * Get parent gird instance.
+     *
+     * @return Grid
+     */
+    public function getGrid()
+    {
+        return $this->grid;
     }
 
     /**
@@ -356,6 +382,28 @@ class Model
     }
 
     /**
+     * @return \Illuminate\Database\Eloquent\Builder|EloquentModel
+     */
+    public function getQueryBuilder()
+    {
+        if ($this->relation) {
+            return $this->relation->getQuery();
+        }
+
+        $this->setSort();
+
+        $queryBuilder = $this->originalModel;
+
+        $this->queries->reject(function ($query) {
+            return in_array($query['method'], ['get', 'paginate']);
+        })->each(function ($query) use (&$queryBuilder) {
+            $queryBuilder = $queryBuilder->{$query['method']}(...$query['arguments']);
+        });
+
+        return $queryBuilder;
+    }
+
+    /**
      * If current page is greater than last page, then redirect to last page.
      *
      * @param LengthAwarePaginator $paginator
@@ -490,6 +538,11 @@ class Model
             $relation = $this->model->$relationName();
 
             $this->queries->push([
+                'method'    => 'select',
+                'arguments' => [$this->model->getTable().'.*'],
+            ]);
+
+            $this->queries->push([
                 'method'    => 'join',
                 'arguments' => $this->joinParameters($relation),
             ]);
@@ -568,6 +621,42 @@ class Model
         ]);
 
         return $this;
+    }
+
+    /**
+     * Set the relationships that should be eager loaded.
+     *
+     * @param mixed $relations
+     *
+     * @return $this|Model
+     */
+    public function with($relations)
+    {
+        if (is_array($relations)) {
+            if (Arr::isAssoc($relations)) {
+                $relations = array_keys($relations);
+            }
+
+            $this->eagerLoads = array_merge($this->eagerLoads, $relations);
+        }
+
+        if (is_string($relations)) {
+            if (Str::contains($relations, '.')) {
+                $relations = explode('.', $relations)[0];
+            }
+
+            if (Str::contains($relations, ':')) {
+                $relations = explode(':', $relations)[0];
+            }
+
+            if (in_array($relations, $this->eagerLoads)) {
+                return $this;
+            }
+
+            $this->eagerLoads[] = $relations;
+        }
+
+        return $this->__call('with', (array) $relations);
     }
 
     /**
